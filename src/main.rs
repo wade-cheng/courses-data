@@ -7,6 +7,7 @@
 //! The database json file is named `courses.json` in https://scottylabs.slack.com/files/U08M22PL413/F09G6PQPXAP/course-search-sandbox.zip.
 
 use courses_data::SearchEngine;
+use log::{debug, trace};
 use std::{
     fs::File,
     io::{BufReader, Write},
@@ -14,7 +15,14 @@ use std::{
     time::Instant,
 };
 
+#[cfg(feature = "zlib")]
+use flate2::{Compression, bufread::ZlibEncoder};
+#[cfg(feature = "zlib")]
+use std::io::Read;
+
 fn main() {
+    courses_data::init_logger();
+
     let mut interactive = true;
     if std::env::args().skip(1).any(|arg| arg == "--only-build") {
         interactive = false;
@@ -30,6 +38,44 @@ fn main() {
         let serialized_search_engine =
             bincode::serde::encode_to_vec(&search_engine, bincode::config::standard()).unwrap();
 
+        trace!("compressing");
+        let time_before_compress = Instant::now();
+
+        // zlib specific transformations
+        #[cfg(feature = "zlib")]
+        let serialized_search_engine = {
+            let mut compressed_search_engine = vec![];
+
+            ZlibEncoder::new(
+                BufReader::new(serialized_search_engine.as_slice()),
+                Compression::best(),
+            )
+            .read_to_end(&mut compressed_search_engine)
+            .unwrap();
+
+            compressed_search_engine
+        };
+
+        // brotli specific transformations
+        #[cfg(feature = "brotli")]
+        let serialized_search_engine = {
+            let mut compressed_search_engine = vec![];
+
+            brotli::BrotliCompress(
+                &mut serialized_search_engine.as_slice(),
+                &mut compressed_search_engine,
+                &brotli::enc::BrotliEncoderParams::default(),
+            )
+            .unwrap();
+
+            compressed_search_engine
+        };
+
+        debug!(
+            "finished compressing in {} seconds:",
+            time_before_compress.elapsed().as_secs_f64()
+        );
+
         File::create("target/data")
             .unwrap()
             .write_all(&serialized_search_engine)
@@ -43,7 +89,7 @@ fn main() {
         )
         .unwrap();
 
-        println!(
+        debug!(
             "deserialized cached index from file system in {} seconds:",
             time_before_index.elapsed().as_secs_f64()
         );
